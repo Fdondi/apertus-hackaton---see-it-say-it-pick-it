@@ -24,11 +24,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path[:0] = [str(ROOT), str(ROOT / "starter")]
 from pipeline.llm import Apertus  # noqa: E402
-from pipeline.perception import Perception, draw  # noqa: E402
-from pipeline.plan import Decision, consistent, decide, said  # noqa: E402
-from pipeline.reason import danger_check, parse, parse_samples  # noqa: E402
+from pipeline.perception import MM_PER_PX, Perception, draw, is_it, on_top, set_scale  # noqa: E402
+from pipeline.plan import CARE_PHRASE, Decision, consistent, decide, said  # noqa: E402
+from pipeline.reason import danger_check, match_objects, parse, parse_samples  # noqa: E402
 from pipeline.scene_graph import SceneGraph  # noqa: E402
-from scene_io import load_scene  # noqa: E402
+from scene_io import load_scene, pixel_to_table  # noqa: E402
+
+
+def table_scale(sc) -> float | None:
+    """mm per pixel on the table at the photo's centre, from the scene's calibration (None without one)."""
+    try:
+        h, w = sc.rgb.shape[:2]
+        a, b = pixel_to_table(sc, w // 2, h // 2), pixel_to_table(sc, w // 2 + 100, h // 2)
+        return float(((b - a) ** 2).sum() ** 0.5) / 100
+    except Exception:
+        return None
 
 
 def answer(llm: Apertus, g: SceneGraph, scene_text: str, text: str, votes: int) -> tuple[Decision, list[dict], list[Decision]]:
@@ -42,6 +52,11 @@ def answer(llm: Apertus, g: SceneGraph, scene_text: str, text: str, votes: int) 
         pass
     if votes:
         readings += parse_samples(llm, text, ctx, n=votes)
+    # "other danger" from the long reading is checked by the short safety question: the long prompt sees danger in
+    # "don't bump the mug on the way"; the short one is told that a request to avoid something is not dangerous
+    if any(r.get("other_danger") for r in readings) and CARE_PHRASE.search(text.lower()) \
+            and danger_check(llm, text) == "none":
+        readings = [{**r, "other_danger": False} for r in readings]
     decisions = []
     for r in readings:
         try:
@@ -60,7 +75,10 @@ def answer(llm: Apertus, g: SceneGraph, scene_text: str, text: str, votes: int) 
     if chosen.kind == "plan":     # a second, separate look at safety before a plan goes out
         danger = danger_check(llm, text)
         cue = DANGER_CUES.get(danger)
-        if danger != "none" and (cue is None or any(w.startswith(c) for c in cue.split() for w in text.lower().split())):
+        words = text.lower().replace(",", " ").split()
+        free = [w for k, w in enumerate(words)       # not right after without / don't / not / never / avoid
+                if not {"without", "don't", "dont", "not", "never", "avoid", "no"} & set(words[max(0, k - 2):k])]
+        if danger != "none" and (cue is None or any(w.startswith(c) for c in cue.split() for w in free)):
             chosen = Decision("refuse", f"This asks the robot to {danger}: that could hurt someone or make an object "
                               "fall.", notes=chosen.notes + [f"safety check: {danger}"])
     return chosen, readings, decisions
@@ -104,6 +122,8 @@ def main():
     for d in scenes:
         sc = load_scene(d)
         t = time.time()
+        scale = table_scale(sc)       # the dev camera gives 0.248: kept at 0.25; another camera setup changes it
+        set_scale(scale if scale and abs(scale - 0.25) > 0.05 * 0.25 else MM_PER_PX)
         try:
             objs = see(sc.rgb)
         except ImportError:        # a missing library is a setup error: stop and say so
@@ -112,6 +132,10 @@ def main():
             print(f"{d.name}: perception failed ({e!r}); answering without objects")
             objs = []
         g = SceneGraph(objs, sc.rgb)
+        g.ask_stacking(lambda a, b: on_top(llm, sc.rgb, a, b))
+        g.matcher = lambda phrase, text, names: match_objects(llm, phrase, text, names)
+        g.reader = lambda text: parse(llm, text)
+        g.looker = lambda i, noun, g=g: is_it(llm, g.nodes[i].obj, noun)
         scene_text = g.stacking_facts()
         draw(sc.rgb, objs, details / f"{d.name}.jpg")
         (details / f"{d.name}.scene.txt").write_text(g.describe() + "\n\nperception notes:\n" + "\n".join(see.log) + "\n",

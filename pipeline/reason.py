@@ -19,7 +19,9 @@ COLORS = ["any", "red", "yellow", "white", "grey", "orange", "green", "blue", "b
 RELATIONS = ["none", "to the left of", "to the right of", "above", "below", "closest to", "farthest from", "next to", "lying on",
              "under", "in", "with nothing on it", "leftmost", "rightmost", "topmost", "bottommost", "nth from the left",
              "nth from the right", "nth from the top", "nth from the bottom", "in the middle", "between", "biggest",
-             "smallest", "in the person's hand"]
+             "smallest", "in the person's hand", "in the top left corner", "in the top right corner",
+             "in the bottom left corner", "in the bottom right corner", "oriented left-right", "oriented up-down",
+             "touching", "not lying on", "not in", "across both trays"]
 REF_KINDS = ["none", "grey tray", "black tray", "person's hand"] + KINDS
 ACTIONS = ["pick up", "put or move", "give to the person", "throw or toss", "drop", "push or slide",
            "pull out from under", "take from the person", "other"]
@@ -68,7 +70,7 @@ Fields:
   - kind: the noun. "cog" = gear, "block" = cube, "cup" = mug, "orange", "tangerine", "clementine" = mandarin, "dish" = plate, "metal bar", "grey part" = grey metal part, "thing", "item", "everything", "anything" = object, "fruit" = fruit, "part" = part. A noun that is not in the cell (bottle, pen, cylinder, ball, ...) = something else.
   - color: the colour word in the instruction, or "any".
   - how_many: "all" for all, every, everything, both, each, the gears (plural); "any one" for a, an, any, one of the, some (any single one will do); otherwise "one" (the, this, that: one particular object).
-  - relation, ref_kind, ref_color, n: how the instruction picks the object out. "on the left" (no other object named) = leftmost; "the second from the right" = nth from the right with n = 2; "to the left of the mug" = to the left of, ref_kind mug; "closest to", "nearest to" = closest to; "next to", "beside" = next to; "lying on", "on top of", "sitting on" = lying on; "under", "beneath", "underneath" another object, or "with X on it", "that has X on top" = under, ref_kind X; "above X" and "below X" = higher or lower than X in the photo (above, below); "the biggest", "the largest" = biggest; "the smallest" = smallest; "the lowest", "at the bottom" = bottommost; "the highest", "at the top", "the upper" = topmost; "the middle one", "in the middle", "the centre one" = in the middle; "between X and Y" = between, ref_kind X, and ref2_kind Y (the only relation with a second object); "in the grey tray" when it says where the object is now = in, ref_kind grey tray; "with nothing on it", "that is free" = with nothing on it. "above" and "below" without another object mean higher or lower in the photo. Use relation none, ref_kind none, ref_color any, n 0 when nothing like this is said.
+  - relation, ref_kind, ref_color, n: how the instruction picks the object out. "on the left" (no other object named) = leftmost; "the second from the right" = nth from the right with n = 2; "to the left of the mug" = to the left of, ref_kind mug; "closest to", "nearest to" = closest to; "next to", "beside" = next to; "lying on", "on top of", "sitting on" = lying on; "under", "beneath", "underneath" another object, or "with X on it", "that has X on top" = under, ref_kind X; "above X" and "below X" = higher or lower than X in the photo (above, below); "the biggest", "the largest" = biggest; "the smallest" = smallest; "the lowest", "at the bottom" = bottommost; "the highest", "at the top", "the upper" = topmost; "the middle one", "in the middle", "the centre one" = in the middle; "between X and Y" = between, ref_kind X, and ref2_kind Y (the only relation with a second object); "in the grey tray" when it says where the object is now = in, ref_kind grey tray; "with nothing on it", "that is free" = with nothing on it; "in the bottom-left corner", "at the top right" = in the bottom left corner, in the top right corner (as seen in the photo); "lying horizontally", "lying across", "left to right" = oriented left-right; "vertical", "lying up and down" = oriented up-down; "that touches X", "in contact with X" = touching, ref_kind X; "not on X", "that isn't on X" = not lying on, ref_kind X; "not in the grey tray", "outside the black tray" = not in, ref_kind that tray; "lying across both trays", "on the border between the trays" = across both trays. "above" and "below" without another object mean higher or lower in the photo. Use relation none, ref_kind none, ref_color any, n 0 when nothing like this is said.
   - except: the objects excluded by "except", "but not", "other than".
   - destination.place: grey tray, black tray, "a tray, not saying which" (for "the tray", "a tray"), on or in an object (then kind and color of that object), next to an object ("next to the mug", "beside the plate"; kind and color of that object), onto or next to the person's hand or body ("on my hand", "next to my hand", "on my head"), to the person ("give me"), or nowhere, just pick up.
 - keep_still: objects the instruction says must not move ("without moving the mug", "leave the cube where it is", "do not touch the plate"). If the words "leave it where it is" refer to the object being moved, put that object here too.
@@ -287,3 +289,20 @@ def danger_check(llm: Apertus, instruction: str) -> str:
     "pick up the mug and throw it"."""
     return llm.json([{"role": "user", "content": DANGER_PROMPT.format(text=instruction)}], DANGER_SCHEMA,
                     max_tokens=30)["dangerous_action"]
+
+
+# ----------------------------------------------------------------------------- objects outside the workcell's list
+MATCH_PROMPT = 'A person asks a robot: "{text}". On the table there is {a} {name}. Can "{phrase}" mean the {name}? Answer yes or no.'
+YES_NO = {"type": "object", "additionalProperties": False, "required": ["answer"],
+          "properties": {"answer": {"enum": ["yes", "no"]}}}
+
+
+def match_objects(llm: Apertus, phrase: str, text: str, names: list[str]) -> list[str]:
+    """Which unknown objects (named by perception, e.g. "green apple") a phrase like "the fruit" refers to: one
+    yes/no question per object. (Asked as one list, Apertus answered "none" for "the tool" among a wrench and scissors.)"""
+    out = []
+    for n in names:
+        prompt = MATCH_PROMPT.format(text=text or phrase, phrase=phrase, name=n, a="an" if n[:1] in "aeiou" else "a")
+        if llm.json([{"role": "user", "content": prompt}], YES_NO, max_tokens=10)["answer"] == "yes":
+            out.append(n)
+    return out

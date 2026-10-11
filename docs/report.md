@@ -86,6 +86,50 @@ before the fixes they prompted, 16/18 after.
 - **FP8 on a 3090** (Ampere) is weight-only: it saves memory, not time. Generation runs at about
   40 tokens/s.
 
+## 6. New scenes and unseen objects: what the blind tests showed
+
+Our first pipeline was tuned on the 50 dev sentences. To find out how it does on scenes and words it
+was not tuned on, three agents that never saw our code wrote test sets with answers in the official
+format: new sentences on the dev photos, new scenes composited from the dev objects (two mugs, five
+red gears, stacks, grids), and scenes with objects the workcell does not have (tennis ball, wrench,
+notebook, blue gear, purple cube… made with SDXL inpainting). Each set has a half we used to find
+problems and a half scored once. The scores are in `SOLUTION.md`; what we learned about Apertus:
+
+- **A list decides what it sees.** Asked to pick from the workcell's objects, Apertus fits anything
+  into the list: a tennis ball, a lemon, a green apple, a wrench and a blue cube all became "mandarin",
+  a computer mouse "mug", a notebook "plate". Asked openly ("what is inside the outline?") it named
+  them right. But the open answer is unreliable for the workcell's own objects: the yellow gear is a
+  "glittery sun-shaped object", the small white part a "mobile phone", a red gear half under the cube
+  "chocolate glaze".
+- **A choice between its two answers is no tie-breaker.** "Is it a mandarin or a tennis ball?" got its
+  own open answer almost every time, also for the dev gears and parts. Two differently worded yes/no
+  questions ("is this a mandarin, about 74 mm?" / "someone says it is a mandarin; right, or a
+  different kind of object?") did separate them: each alone wrongly rejected one dev object; requiring
+  both to say no rejected none of the dev objects and 11 of 14 unseen ones. Colour does the rest: a
+  black "mug" or a silver "mandarin" is something else.
+- **Yes/no beats lists for meaning too.** "Which of [computer mouse, scissors, skateboard deck,
+  wrench] can 'the tool' mean?" got an empty list; one yes/no question per object got scissors and
+  wrench. Asked "is the object in this crop a padlock?", it recognised a padlock it had named "USB flash
+  drive" itself.
+- **"Part of it" means nothing.** Asked whether a region next to the mug is part of it or its shadow,
+  Apertus said "part of it" for the handle and for the shadow alike. The pixels decide: a shadow is
+  darker than the tray and grey; a handle is lighter (lightness 33–47 below the tray floor for every
+  shadow in the dev photos, 48–114 above it for every handle).
+- **Unknown nouns land in known slots.** The parser has to put "the screwdriver" in "closest to the
+  screwdriver" somewhere: it chose *saucer*; "the computer mouse" became *the person's hand*. A
+  reference kind now needs its own word in the sentence, otherwise it is looked up by name.
+- **Fixing false refusals can cost more than it gains.** The blind sentences showed refusals of
+  harmless requests ("don't bump the mug on the way", "without dropping the yellow gear"), so we let a
+  second, short safety question overrule the long reading's "other danger" and required explicit words
+  for "keep X where it is" and "both at once". A set of 27 tricky unsafe or impossible sentences
+  (`experiments/safety_regression.jsonl`) then caught 18, down from 25: "do not lift the mug", "in a
+  single grasp", "stack it as high as you can" slipped through. In the scorer a missed refusal costs
+  about 3 points and a needless one about 1.6, so the flags now stand unless the sentence only asks for
+  care ("without dropping", "careful"), and a negated danger word ("without dropping it") does not count.
+- **Some things it cannot see.** A generated carrot was a "surgical instrument" at every crop size; a
+  red apple passed both checks as a mandarin; Apertus said a cube lying on the end of a bar and the bar
+  were "side by side" (the bar's usual length shows it, see `scene_graph.amodal`).
+
 ## Perception on altered photos
 
 `experiments/augment_check.py` runs perception on altered copies of five dev photos and compares the

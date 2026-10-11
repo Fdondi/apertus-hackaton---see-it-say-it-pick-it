@@ -15,8 +15,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT), str(ROOT / "starter")]
 from pipeline.llm import Apertus  # noqa: E402
-from pipeline.perception import Perception  # noqa: E402
+from pipeline.perception import Perception, is_it, on_top  # noqa: E402
 from pipeline.scene_graph import SceneGraph  # noqa: E402
+from pipeline.reason import match_objects, parse  # noqa: E402
 from run import answer  # noqa: E402
 from scene_io import load_scene  # noqa: E402
 
@@ -35,6 +36,10 @@ def main():
     for sc in sorted({c["scene"] for c in cases}):
         s = load_scene(args.data / sc)
         g = SceneGraph(see(s.rgb), s.rgb)
+        g.ask_stacking(lambda a, b, rgb=s.rgb: on_top(llm, rgb, a, b))
+        g.matcher = lambda phrase, text, names: match_objects(llm, phrase, text, names)
+        g.reader = lambda text: parse(llm, text)
+        g.looker = lambda i, noun, g=g: is_it(llm, g.nodes[i].obj, noun)
         graphs[sc] = (g, g.stacking_facts())
 
     def run(c):
