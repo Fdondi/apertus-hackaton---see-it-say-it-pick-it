@@ -1,4 +1,9 @@
-# Python 3.11 recommended
+# Python 3.11 or 3.12 recommended
 numpy
 opencv-python
-# to run Apertus locally (GPU): pip install vllm
+# the pipeline (run.py): SAM 2.1 through transformers. For a GPU, install torch from https://pytorch.org first
+torch
+torchvision
+transformers>=4.57
+pillow
+# Apertus itself runs in vLLM: docker compose up -d (see docker-compose.yml), or pip install vllm

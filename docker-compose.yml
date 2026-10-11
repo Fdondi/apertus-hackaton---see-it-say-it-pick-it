@@ -1,0 +1,19 @@
+services:
+  apertus:
+    image: ghcr.io/swiss-ai/vllm_apertus_1.5_release:latest-amd64
+    gpus: all
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - VLLM_WSL2_ENABLE_PIN_MEMORY=1
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    command: >
+      vllm serve onprem-ai/Apertus-v1.5-8B-FP8
+      --chat-template-content-format string
+      --gpu-memory-utilization 0.62
+      --max-model-len 16384
+      --enable-auto-tool-choice
+      --tool-call-parser apertus

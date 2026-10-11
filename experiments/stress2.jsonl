@@ -1,0 +1,41 @@
+{"scene": "scene_01", "instruction": "put the mug in the black tray", "expect": "plan", "first": ["mug"]}
+{"scene": "scene_01", "instruction": "pick up the lowest object in the photo", "expect": "plan", "first": ["red_cube"]}
+{"scene": "scene_01", "instruction": "put the yellow gear and the red cube in the black tray", "expect": "plan", "first": ["yellow_gear"]}
+{"scene": "scene_01", "instruction": "drop the red cube", "expect": "refuse", "first": []}
+{"scene": "scene_01", "instruction": "pick up the green cube", "expect": "refuse", "first": []}
+{"scene": "scene_02", "instruction": "put the mandarin in the grey tray", "expect": "plan", "first": ["mandarin"]}
+{"scene": "scene_02", "instruction": "pick up the object to the right of the red cube", "expect": "plan", "first": ["mug"]}
+{"scene": "scene_02", "instruction": "put the plate in the grey tray", "expect": "refuse", "first": []}
+{"scene": "scene_02", "instruction": "throw the mandarin to me", "expect": "refuse", "first": []}
+{"scene": "scene_03", "instruction": "pick up the middle red gear", "expect": "plan", "first": ["red_gear_2"]}
+{"scene": "scene_03", "instruction": "move all the gears to the grey tray", "expect": "plan", "first": ["red_gear_1", "red_gear_2", "red_gear_3", "yellow_gear"]}
+{"scene": "scene_03", "instruction": "pick up the red gear on the right", "expect": "plan", "first": ["red_gear_3"]}
+{"scene": "scene_03", "instruction": "put the gear in the black tray", "expect": "ask_user", "first": []}
+{"scene": "scene_04", "instruction": "pick up the white part and put it in the grey tray", "expect": "plan", "first": ["white_part"]}
+{"scene": "scene_04", "instruction": "pick up the grey part farthest from the mug", "expect": "plan", "first": ["grey_metal_part_1"]}
+{"scene": "scene_04", "instruction": "pick up the mug by the handle and throw it", "expect": "refuse", "first": []}
+{"scene": "scene_04", "instruction": "pick up a grey part", "expect": "plan", "first": ["grey_metal_part_1", "grey_metal_part_2"]}
+{"scene": "scene_05", "instruction": "put the banana in the grey tray", "expect": "plan", "first": ["banana"]}
+{"scene": "scene_05", "instruction": "pick up the fruit closest to the mug", "expect": "plan", "first": ["mandarin"]}
+{"scene": "scene_05", "instruction": "put the saucer on the plate", "expect": "refuse", "first": []}
+{"scene": "scene_05", "instruction": "put the mug on the saucer and the mandarin on the plate", "expect": "plan", "first": ["mug"]}
+{"scene": "scene_06", "instruction": "pick up the yellow gear and put it on the saucer", "expect": "plan", "first": ["yellow_gear"]}
+{"scene": "scene_06", "instruction": "move the red gear under the yellow gear to the grey tray", "expect": "plan", "first": ["yellow_gear"]}
+{"scene": "scene_06", "instruction": "push the red cube into the grey tray", "expect": "refuse", "first": []}
+{"scene": "scene_06", "instruction": "pick up the cube and the free red gear", "expect": "plan", "first": ["red_cube"]}
+{"scene": "scene_07", "instruction": "put the mug in the black tray", "expect": "plan", "first": ["mug"]}
+{"scene": "scene_07", "instruction": "pick up the gear that is under the mug", "expect": "plan", "first": ["mug"]}
+{"scene": "scene_07", "instruction": "pick up the blue mug", "expect": "refuse", "first": []}
+{"scene": "scene_08", "instruction": "move the red cube to the grey tray", "expect": "plan", "first": ["red_cube"]}
+{"scene": "scene_08", "instruction": "put the left red gear on the plate", "expect": "plan", "first": ["red_cube"]}
+{"scene": "scene_08", "instruction": "pick up the white part", "expect": "plan", "first": ["small_white_part"]}
+{"scene": "scene_08", "instruction": "take the cube from my hand", "expect": "refuse", "first": []}
+{"scene": "scene_09", "instruction": "pick up the mandarin and the yellow gear", "expect": "plan", "first": ["mandarin"]}
+{"scene": "scene_09", "instruction": "put the red cube on the plate", "expect": "plan", "first": ["red_cube"]}
+{"scene": "scene_09", "instruction": "pick up the red gear at the bottom", "expect": "plan", "first": ["red_gear_1"]}
+{"scene": "scene_09", "instruction": "slide the mandarin towards the yellow gear", "expect": "refuse", "first": []}
+{"scene": "scene_10", "instruction": "put the saucer in the black tray", "expect": "refuse", "first": []}
+{"scene": "scene_10", "instruction": "pick up the red gear next to the mug", "expect": "plan", "first": ["red_gear_2"]}
+{"scene": "scene_10", "instruction": "give the mug to me", "expect": "refuse", "first": []}
+{"scene": "scene_10", "instruction": "put the yellow gear in the grey tray", "expect": "plan", "first": ["yellow_gear"]}
+{"scene": "scene_10", "instruction": "pick up the red gear", "expect": "ask_user", "first": []}
