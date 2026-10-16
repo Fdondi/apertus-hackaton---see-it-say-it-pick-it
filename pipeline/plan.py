@@ -38,6 +38,8 @@ ORDER_WORDS = [(re.compile(r"right to left|from the right|rightmost first|right 
                 lambda c, a: -a)]
 ORDINALS = {"first", "second", "third", "fourth", "fifth", "sixth", "last", "next-to-last", "penultimate"}
 PRONOUNS = {"it", "this", "that", "them", "these", "those", "one", "this one", "that one", "the", "same"}
+NEXT_WORDS = {"next", "beside", "near", "by", "adjacent", "alongside", "besides", "nearby"}
+BARE_PRONOUNS = {"it", "this", "that", "them", "these", "those"}      # nothing else in the words: only pointed at
 ANY_NOUNS = {"two", "three", "four", "five", "both", "other", "each", "all", "them", "these", "those",
              "object", "thing", "item", "one", "stuff", "everything", "anything", "something", "objects", "things",
              "whatever", "whichever",
@@ -480,6 +482,12 @@ def _dest_phrase(where: str) -> str:
 
 def decide(g: SceneGraph, cmd: dict, text: str = "") -> Decision:
     notes = []
+    if text and _words(text) & {"in", "into", "inside", "on", "onto"} and not _words(text) & NEXT_WORDS \
+            and any(st["destination"]["place"] == "next to an object" for st in cmd["steps"]):
+        # "put the mug inside the small white part" read as "next to": the sentence says in or on, not beside
+        cmd = {**cmd, "steps": [{**st, "destination": {**st["destination"], "place": "on or in an object"}}
+                                if st["destination"]["place"] == "next to an object" else st for st in cmd["steps"]]}
+        notes.append("destination: the sentence says in or on, not next to")
     steps = cmd["steps"]
     words = steps[0]["target"]["words"] or "the object"
     # 1. unsafe actions: refused whatever the scene
@@ -500,7 +508,9 @@ def decide(g: SceneGraph, cmd: dict, text: str = "") -> Decision:
     if all(_words(st["target"]["words"]) <= PRONOUNS for st in steps) and not cmd["vague_reference"]:
         cmd = {**cmd, "vague_reference": True}         # "put it in the other tray": "it" names nothing
     named = any(st["target"]["relation"] != "none" and said(st["target"]["relation"], text) for st in steps)
-    if cmd["vague_reference"] and not named:      # "the object in my hand" is pointed at, but also described
+    # "take it off the gear": nothing but "it" names the object, whatever else the sentence says about it
+    bare = all(_words(st["target"]["words"]) and _words(st["target"]["words"]) <= BARE_PRONOUNS for st in steps)
+    if cmd["vague_reference"] and (not named or bare):      # "the object in my hand" is pointed at, but also described
         return Decision("ask_user", "Which object do you mean? I cannot see where you are pointing. I can see: "
                         + ", ".join(sorted({g.nodes[i].name for i in g.ids()})) + ".", notes=["vague reference"])
     keep = {i for k in cmd.get("keep_still", []) for i in _all(g, k["kind"], k["color"])}
@@ -687,8 +697,13 @@ def decide(g: SceneGraph, cmd: dict, text: str = "") -> Decision:
             if g.nodes[dest].touched_by_hand:
                 return Decision("refuse", f"The {dcls} is in or under a person's hand: the gripper must not move onto a "
                                 "person.", notes=notes)
-            opening = CONTAINERS.get(dcls) or (INNER * g.nodes[dest].obj.size_mm[1] if dcls == OTHER and
-                                               _words(cmd.get("move_where", "")) & {"in", "into", "inside"} else None)
+            # "put the mug inside the small white part": a known object is a container only if the sentence says
+            # in/into/inside right before it; an unknown one (a bowl, a box) by the place phrase as before
+            kind_word = re.escape((d["kind"].split() or ["object"])[-1])
+            inside = re.search(r"\b(in|into|inside)\s+(?:(?:the|a|an|that|this)\s+)?(?:\w+\s+){0,2}?" + kind_word + r"\b",
+                               (text or "").lower())
+            says_in = bool(inside) if dcls != OTHER else bool(_words(cmd.get("move_where", "")) & {"in", "into", "inside"})
+            opening = CONTAINERS.get(dcls) or (INNER * g.nodes[dest].obj.size_mm[1] if says_in else None)
             if opening:
                 big = [i for i in ids if g.nodes[i].obj.size_mm[1] > opening or g.nodes[i].obj.size_mm[0] > 1.6 * opening]
                 if big:

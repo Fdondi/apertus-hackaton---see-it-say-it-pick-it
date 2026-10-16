@@ -8,7 +8,8 @@
    It says in a few words what it sees, picks a workcell object (or "other object"), a second
    choice and the colour. An object that is not one of the workcell's keeps Apertus's own words
    ("tennis ball"); a workcell shape in a colour it does not have ("blue cube") too.
-4. Clean-up: a region larger than its object can be takes the second choice; a region inside
+4. Completion: a region too small for its name is grown with the raw regions of a closer SAM look around it;
+   Apertus names the result. Clean-up: a region larger than its object can be takes the second choice; a region inside
    another object is a piece of it (the hub of a gear, the centre of the saucer) or a separate
    object lying on it; a region next to an object is a part of it (the mug's handle), its shadow,
    or a separate object. Apertus answers these questions from a crop; colours check its answers.
@@ -18,7 +19,7 @@ The result is cached per image (masks as packed bits), so only the first run cos
 """
 from __future__ import annotations
 
-import hashlib, re
+import hashlib, pickle, re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -74,7 +75,7 @@ DESCRIBE_SCHEMA = {"type": "object", "additionalProperties": False, "required": 
 
 # words of the open description that agree with a workcell class (Apertus describes the mug's inside as "green
 # liquid" and the small white part as an "electronic device"); other words make it ask which of the two it is
-GEAR_WORDS = "gear cog wheel sprocket sun star flower toothed"      # "glittery sun-shaped object": the yellow gear
+GEAR_WORDS = "gear cog wheel sprocket sun star flower toothed saw blade"      # "glittery sun-shaped object": the yellow gear
 CLASS_WORDS = {"red gear": GEAR_WORDS, "yellow gear": GEAR_WORDS,
                "red cube": "cube block box brick square cubic", "mug": "mug cup liquid coffee tea drink beverage",
                "mandarin": "mandarin orange tangerine clementine citrus", "banana": "banana",
@@ -217,12 +218,15 @@ class Segmenter:
     def __init__(self, model: str = "facebook/sam2.1-hiera-large", device: str | None = None):
         self.model_id, self.device, self._gen = model, device, None
 
-    def __call__(self, rgb: np.ndarray) -> list[tuple[np.ndarray, float]]:
+    def _load(self):
         if self._gen is None:
             import torch
             from transformers import pipeline
             dev = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
             self._gen = pipeline("mask-generation", model=self.model_id, device=dev, dtype=torch.float32)
+
+    def __call__(self, rgb: np.ndarray) -> list[tuple[np.ndarray, float]]:
+        self._load()
         from PIL import Image
         # SAM sees 1024 pixels on the long side whatever we give it; giving it a 1024-pixel copy keeps the
         # mask post-processing small (at full size it took 27 GB of RAM). Masks are scaled back up.
@@ -232,9 +236,36 @@ class Segmenter:
         # 48 x 48 seed points: the small white part on the grey tray is found only with this density
         out = self._gen(Image.fromarray(small), points_per_batch=64, points_per_crop=48,
                         pred_iou_thresh=0.8, stability_score_thresh=0.85)
-        return [(cv2.resize(np.asarray(m, np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool), float(s))
-                for m, s in zip(out["masks"], out["scores"])]
+        props = [(cv2.resize(np.asarray(m, np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool), float(s))
+                 for m, s in zip(out["masks"], out["scores"])]
+        return props
 
+    def window(self, rgb: np.ndarray, cx: int, cy: int, size: int = 640) -> list[tuple[int, int, np.ndarray]]:
+        """SAM again on one size x size window of the photo at native resolution, enlarged to 1024 pixels: it sees
+        detail the 1024-pixel copy of the whole photo loses (a valve's cover, its plug and its body are three
+        regions there). Returns (x0, y0, mask) for each region of 1500 px or more that the window's edge does not cut."""
+        from PIL import Image
+        self._load()
+        h, w = rgb.shape[:2]
+        x0 = int(min(max(cx - size // 2, 0), max(w - size, 0)))
+        y0 = int(min(max(cy - size // 2, 0), max(h - size, 0)))
+        crop = rgb[y0:y0 + size, x0:x0 + size]
+        ch, cw = crop.shape[:2]
+        k = 1024 / max(ch, cw)
+        big = cv2.resize(crop, (round(cw * k), round(ch * k)), interpolation=cv2.INTER_CUBIC)
+        out = self._gen(Image.fromarray(big), points_per_batch=64, points_per_crop=48,
+                        pred_iou_thresh=0.8, stability_score_thresh=0.85)
+        pieces = []
+        for m in out["masks"]:
+            m = cv2.resize(np.asarray(m, np.uint8), (cw, ch), interpolation=cv2.INTER_NEAREST).astype(bool)
+            if m.sum() < 1500:
+                continue
+            ys, xs = np.nonzero(m)
+            cut = ((xs.min() == 0 and x0 > 0) or (ys.min() == 0 and y0 > 0)
+                   or (xs.max() == cw - 1 and x0 + cw < w) or (ys.max() == ch - 1 and y0 + ch < h))
+            if not cut:
+                pieces.append((x0, y0, m))
+        return pieces
 
 # ----------------------------------------------------------------------------- 2. geometry filter
 def workcell_roi(h: int, w: int) -> np.ndarray:
@@ -493,13 +524,13 @@ def too_small(cls: str, long_mm: float) -> bool:
 
 
 # the open description's nouns for the workcell's objects ("gear wheel", "orange", "coffee cup")
-FAMILY = {**{w: ("red gear", "yellow gear") for w in ("gear", "cog", "sprocket", "sun", "star", "flower", "toothed")},
+FAMILY = {**{w: ("red gear", "yellow gear") for w in ("gear", "cog", "sprocket", "sun", "star", "flower", "toothed", "saw")},
           "cube": ("red cube",),
           "block": ("red cube",), "mug": ("mug",), "cup": ("mug",), "mandarin": ("mandarin",), "orange": ("mandarin",),
           "tangerine": ("mandarin",), "clementine": ("mandarin",), "banana": ("banana",), "plate": ("plate",),
           "dish": ("plate",), "saucer": ("saucer",)}
 GENERIC_HEADS = {"wheel", "piece", "part", "object", "toy", "fruit", "tooth", "teeth", "hub", "rim", "edge", "half",
-                 "section", "segment", "handle", "decoration", "ornament", "design", "figure", "emblem", "shape"}       # "gear tooth": a piece of a gear
+                 "section", "segment", "handle", "decoration", "ornament", "design", "figure", "emblem", "shape", "blade"}       # "gear tooth": a piece of a gear
 
 
 def from_description(label: str, what: str, color: str, long_mm: float) -> str:
@@ -673,6 +704,90 @@ def stack_rest(cands: list[Cand], log: list) -> list[Cand]:
                 out.append(c)
                 log.append(f"a stack outlined as one {r.long_mm:.0f} mm region: another {r.first} under the top one")
     return out
+
+
+COMPACT = {"red gear", "yellow gear", "red cube", "mug", "mandarin"}      # about as wide as long, seen from above
+
+
+def near_miss(c: Cand, lab: dict, cands: list[Cand], rgb: np.ndarray, llm: Apertus, log: list):
+    """A region Apertus named a workcell object, dropped only because it is a little too large for it (the red cube
+    seen from the side of the photo: 110 mm, the window ends at 105): ask Apertus yes or no, without the size."""
+    k = c.first
+    if c.label != EMPTY or k not in SIZE_MM or k in ROUND_CLASSES:
+        return
+    if not SIZE_MM[k][2] < c.long_mm <= 1.25 * SIZE_MM[k][2] or c.short_mm > SIZE_MM[k][2]:
+        return
+    if any(o is not c and o.label == k and inside_share(o.mask, c.fill) >= 0.85 for o in cands):
+        return                      # the object with its shadow: the object itself is already there
+    a = "an" if k[:1] in "aeiou" else "a"
+    schema = {"type": "object", "additionalProperties": False, "required": ["answer"],
+              "properties": {"answer": {"enum": ["yes", "no"]}}}
+    if ask_crop(llm, crop_for(rgb, c.mask), IS_IT_PROMPT.format(a=a, noun=k), schema)["answer"] == "yes":
+        what, color = clean_name(lab.get("what", "")), lab.get("color", "")
+        c.label, c.name, c.colors = identity(k, what if agrees(k, what) else "", color if agrees(k, what) else "")
+        c.weak = False
+        log.append(f"a {c.long_mm:.0f} mm region Apertus confirmed as a {k}: a little larger than usual, seen from the side")
+
+
+def complete(cands: list[Cand], pieces: list, rgb: np.ndarray, llm: Apertus, log: list, window=None,
+             cap_mm: float = 110) -> list[Cand]:
+    """An object SAM broke into pieces none of which is the object (the valve: its plug, its body and its cover are
+    separate regions, the plug alone is 55 mm): grow an undersized region with the raw regions that touch it
+    until it is the size of an object, and let Apertus name the result. The pieces stay if it is not one.
+    `window(cx, cy)` gives the regions SAM finds in a closer look around a point."""
+    def small(c: Cand) -> bool:     # too small for what the size rules named it, or for what Apertus first said
+        return c.label in SIZE_MM and c.label not in ROUND_CLASSES and \
+            c.long_mm < max(SIZE_MM[c.label][1], SIZE_MM.get(c.first, (0, 0, 0))[1])
+    whole = [c for c in cands if c.label == HAND or (c.label in SIZE_MM and not small(c))]
+    base, new, gone = pieces, [], []
+    for f in sorted([c for c in cands if small(c)], key=lambda c: -int(c.mask.sum())):
+        if f in gone or any(o is not f and inside_share(f.mask, o.fill) >= 0.5 for o in whole):
+            continue                    # a piece lying in another object: the nesting step decides about it
+        x0, y0, x1, y1 = bbox_of(f.mask)
+        pieces = base + (window((x0 + x1) // 2, (y0 + y1) // 2) if window else [])
+        U, used = f.mask.copy(), set()
+        for _ in range(10):
+            ring = cv2.dilate(U.astype(np.uint8), np.ones((15, 15), np.uint8)).astype(bool)
+            best, best_t = None, 0
+            for i, (x0, y0, pm) in enumerate(pieces):
+                if i in used:
+                    continue
+                ph, pw = pm.shape
+                t = int((ring[y0:y0 + ph, x0:x0 + pw] & pm).sum())
+                if t <= best_t or (U[y0:y0 + ph, x0:x0 + pw] & pm).sum() > 0.9 * pm.sum():
+                    continue
+                if any(o is not f and (o.mask[y0:y0 + ph, x0:x0 + pw] & pm).sum() > 0.5 * pm.sum() for o in whole):
+                    continue            # a piece of another object
+                V = U.copy()
+                V[y0:y0 + ph, x0:x0 + pw] |= pm
+                if size_mm(filled(V))[0] <= cap_mm:
+                    best, best_t = i, t
+            if best is None:
+                break
+            x0, y0, pm = pieces[best]
+            U[y0:y0 + pm.shape[0], x0:x0 + pm.shape[1]] |= pm
+            used.add(best)
+        if not used:
+            continue
+        long, short = size_mm(filled(U))
+        if U.sum() < 1.4 * f.mask.sum():
+            continue
+        out = classify(llm, rgb, [U])[0]
+        label = pick_label(out, long, short)
+        if label not in SIZE_MM or label in ROUND_CLASSES or not SIZE_MM[label][1] <= long <= SIZE_MM[label][2]:
+            continue
+        if label in COMPACT and short < 0.6 * long:
+            continue                    # a gear, a cube or a mug is not a bar
+        if any(o is not f and (o.mask & U).sum() > 0.2 * min(U.sum(), o.mask.sum()) for o in whole):
+            continue                    # it would overlap an object that is already whole
+        what, color = clean_name(out.get("what", "")), out.get("color", "")
+        c = Cand(U, label, out["second_choice"], f.score, first=out["label"])
+        c.label, c.name, c.colors = identity(label, what if agrees(label, what) else "", color if agrees(label, what) else "")
+        inner = [o for o in cands if o is not c and o.mask.sum() < U.sum() and inside_share(o.mask, c.fill) >= 0.7]
+        gone += inner
+        new.append(c)
+        log.append(f"{len(used)} pieces of {long:.0f} x {short:.0f} mm joined into one {label}")
+    return [c for c in cands if c not in gone] + new
 
 
 def resolve(cands: list[Cand], rgb: np.ndarray, llm: Apertus, log: list | None = None) -> list[Cand]:
@@ -857,23 +972,39 @@ class Perception:
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.log: list[str] = []
+        self.pieces: list = []      # SAM's raw regions of 1500-60000 px as (x0, y0, mask): for completing a broken object
         self.fresh = False          # True: ignore the old filtered cache, run SAM and keep its raw output
 
     def proposals(self, rgb: np.ndarray) -> list[tuple[np.ndarray, float]]:
         """SAM's regions after the geometry filter. SAM's raw output is what is cached, so the filter can change
         without running SAM again. (An older cache holds filtered regions only: used if there is no raw one.)"""
-        digest = hashlib.sha1(rgb.tobytes() + b"p4-1024").hexdigest()[:20]
+        digest = self._digest = hashlib.sha1(rgb.tobytes() + b"p4-1024").hexdigest()[:20]
         raw = self.cache_dir / f"raw_{digest}.npz" if self.cache_dir else None
         old = self.cache_dir / f"sam_{digest}.npz" if self.cache_dir else None
+        self.pieces = []
         if raw and raw.exists():
-            return prefilter(self._load(raw, rgb.shape), rgb.shape)
-        if old and old.exists() and not self.fresh:
+            props = self._load(raw, rgb.shape)
+        elif old and old.exists() and not self.fresh:
             return self._load(old, rgb.shape)
-        props = [(m, s) for m, s in self.seg(rgb) if m.sum() >= 1000]
-        if raw:
-            bits = np.packbits(np.stack([m for m, _ in props]).reshape(len(props), -1), axis=1)
-            np.savez_compressed(raw, bits=bits, scores=np.array([s for _, s in props]))
+        else:
+            props = [(m, s) for m, s in self.seg(rgb) if m.sum() >= 1000]
+            if raw:
+                bits = np.packbits(np.stack([m for m, _ in props]).reshape(len(props), -1), axis=1)
+                np.savez_compressed(raw, bits=bits, scores=np.array([s for _, s in props]))
+        self.pieces = [(*bbox_of(m)[:2], m[bbox_of(m)[1]:bbox_of(m)[3] + 1, bbox_of(m)[0]:bbox_of(m)[2] + 1])
+                       for m, _ in props if 1500 <= m.sum() <= 60000]
         return prefilter(props, rgb.shape)
+
+    def window(self, rgb: np.ndarray, cx: int, cy: int) -> list:
+        """SAM's regions in a closer look around (cx, cy), cached with the photo's other proposals."""
+        gx, gy = 40 * round(cx / 40), 40 * round(cy / 40)
+        path = self.cache_dir / f"win_{self._digest}_{gx}_{gy}.pkl" if self.cache_dir else None
+        if path and path.exists():
+            return [(x, y, np.unpackbits(bits)[:h * w].reshape(h, w).astype(bool)) for x, y, h, w, bits in pickle.loads(path.read_bytes())]
+        pieces = self.seg.window(rgb, gx, gy)
+        if path:
+            path.write_bytes(pickle.dumps([(x, y, *m.shape, np.packbits(m)) for x, y, m in pieces]))
+        return pieces
 
     @staticmethod
     def _load(path: Path, shape) -> list[tuple[np.ndarray, float]]:
@@ -914,6 +1045,9 @@ class Perception:
                 c.label = EMPTY     # a colourless region cannot be the saucer (yellow rim) or a gear: the plate's well
             cands.append(c)
         self.log = []
+        for c, lab in zip(list(cands), labels):
+            near_miss(c, lab, cands, rgb, self.llm, self.log)
+        cands = complete(cands, self.pieces, rgb, self.llm, self.log, lambda cx, cy: self.window(rgb, cx, cy))
         cands += stack_rest(cands, self.log)
         kept = resolve(cands, rgb, self.llm, self.log)
         for c in kept:
