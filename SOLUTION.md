@@ -1,11 +1,17 @@
-# See It, Say It, Pick It: our pipeline
+# See It, Say It, Pick It: the pipeline
 
 **Approach in one sentence.** SAM 2.1 cuts the photo into regions; Apertus names each region, reads
 the instruction into a small structured command, and code resolves that command on a scene graph
 and applies the safety rules.
 
-Apertus does every language step: naming what it sees, understanding the instruction, deciding
-which reading is meant. The one open vision model, SAM 2.1, only proposes regions without names.
+Apertus names what it sees, reads the instruction and answers the safety questions. The one open
+vision model, SAM 2.1, only proposes regions without names. Code resolves the command and applies the
+safety limits. How the reading is checked depends on `run.py --reading`:
+- **`rules`** (default, the original pipeline): 36 keyword rules in code repair Apertus's reading against the sentence
+  (marked R1–R30, S1–S5 and V in `pipeline/plan.py` and `run.py`).
+- **`questions`**: no keyword rules; where they used to decide, Apertus answers short follow-up questions
+  (`pipeline/ask.py`, `h3()` in `run.py`). The study behind it: [docs/questions-instead-of-rules.md](docs/questions-instead-of-rules.md).
+
 Everything runs locally: Apertus 1.5 8B in vLLM (Docker), SAM 2.1 through `transformers`.
 
 ## Results on the dev set (50 instructions, `starter/evaluate.py`)
@@ -14,26 +20,32 @@ Everything runs locally: Apertus 1.5 8B in vLLM (Docker), SAM 2.1 through `trans
 |---|---|---|---|
 | Baseline (`baseline/baseline.py`: Apertus reads the photo, plain prompt) | 13.1 | 2.0 | 15.1 |
 | Apertus alone, better prompt + constrained JSON + decision split from pointing (`experiments/apertus_only.py`) | 11.4 | 6.7 | 18.1 |
-| **This pipeline** (`run.py`) | **35.0** | **30.0** | **65.0** |
+| **This pipeline** (`run.py`, either `--reading`) | **35.0** | **30.0** | **65.0** |
 
 We tuned on the dev set, so 65/65 there says little about new scenes. To measure that, agents that
 never saw our code wrote test sets in the official format (same scorer, same 80/20 mix of plans and
 questions/refusals):
 
-| Blind test set (written by an agent that never saw the code) | Size | First version | This version |
-|---|---|---|---|
-| Round 3: new sentences on the dev photos | 60 | 50.0 | **53.2** |
-| Round 3: new scenes from the dev objects, two with objects the workcell does not have (kiwi, pen, battery, blue cube) | 42 | 32.2 | **48.6** |
-| Round 2: new sentences on the dev photos | 80 | 46.1 | 52.3 |
-| Round 2: new scenes composited from the dev objects (two mugs, five red gears, stacks, grids, an empty tray) | 40 | 25.3 | 47.3 |
-| Round 2: scenes with objects the workcell does not have (SDXL-inpainted padlock, peach, rubber duck, dice…; recoloured and resized gears and cubes) | 40 | 14.2 | 37.0 |
-| Dev set | 50 | 65.0 | **65.0** |
+| Blind test set (written by an agent that never saw the code) | Size | First version | At the time | Current `rules` | Current `questions` |
+|---|---|---|---|---|---|
+| Round 3: new sentences on the dev photos | 60 | 50.0 | 53.2 | 56.0 | 56.6 |
+| Round 3: new scenes from the dev objects, two with objects the workcell does not have (kiwi, pen, battery, blue cube) | 42 | 32.2 | 48.6 | 50.4 | 51.2 |
+| Round 2: new sentences on the dev photos | 80 | 46.1 | 52.3 | 56.1 | 53.3 |
+| Round 2: new scenes composited from the dev objects (two mugs, five red gears, stacks, grids, an empty tray) | 40 | 25.3 | 47.3 | 53.5 | 48.8 |
+| Round 2: scenes with objects the workcell does not have (SDXL-inpainted padlock, peach, rubber duck, dice…; recoloured and resized gears and cubes) | 40 | 14.2 | 37.0 | 37.0 | 30.6 |
+| Round 4: reworded and unsafe sentences on the dev photos | 105 | 40.5 | 46.5 | 46.5 | 51.6 |
+| Dev set | 50 | 65.0 | 65.0 | 65.0 | 65.0 |
 
-Each round was written after we froze the code and scored once; round 3 is the final code. (Round 2
+Each round was written after we froze the code and scored once. "At the time" is the code when round 3
+was scored (for round 4: when round 4 was scored, commit f47f24d). The last two columns are the code in
+this repository now, on the same cached Apertus replies; it was fixed afterwards on what rounds 1 to 3
+showed (below) and on the held-out scenes ([heldout/REPORT.md](heldout/REPORT.md)), so those columns are
+not blind for rounds 1 to 3. Round 4 was later used to design the yes/no questions of `questions`, so its 51.6 is
+slightly optimistic. All test sets, both readings: [README](README.md#results). (Round 2
 with the code frozen when it was written: 49.2, 47.3, 37.0; the numbers in the table include fixes
 found on round-1 data before anyone looked at round 2.) A targeted set of 27 tricky unsafe or
 impossible sentences plus 7 harmless look-alikes (`experiments/safety_regression.jsonl`): 25/27 refused
-and 6/7 planned, against 25/27 and 4/7 for the first version. After round 3 was scored we fixed three
+and 6/7 planned, against 25/27 and 4/7 for the first version (`--reading questions`: 26/27 and 6/7). After round 3 was scored we fixed three
 wording gaps it showed ("between the other two", "the gear that isn't red", "starting with the
 smallest" / "from right to left"); the dev set and the safety set did not change. A first round of the same
 three kinds (each half used to find problems, half scored once before further fixes) gave, for its
@@ -61,6 +73,10 @@ objects ──► scene graph: grey/black tray, what lies on what, the person's 
 
 instruction ──► Apertus: structured command ──► resolve on the scene graph ──► safety rules ──► plan
                 (5 readings, vote)               (which objects?)               ask / refuse    pick/place
+                                                       ▲    │
+                          --reading rules: keyword     │    │  --reading questions: when unresolved,
+                          rules repair the command ────┘    └─► Apertus answers one follow-up question
+                                                                (up to 3 rounds), then resolve again
 ```
 
 | Step | File | Model | What it does |
@@ -72,59 +88,46 @@ instruction ──► Apertus: structured command ──► resolve on the scene
 | Completion | `pipeline/perception.py` | SAM again + **Apertus** | A region too small for what it was named (the valve's plug alone is 55 mm) is grown with the raw SAM regions that touch it, taken from a second SAM pass over a 640 px window around it at native resolution; the result counts only if it is the size of a workcell object, overlaps no whole object, is as wide as that object is, and Apertus names it. A region Apertus named a workcell object that is only up to 25 % too large (the cube seen from the side, 111 mm against 105) is kept if Apertus says yes to "is it a red cube?" without the size |
 | Scene graph | `pipeline/scene_graph.py` | **Apertus** + geometry | Grey tray found by colour; stacking from outlines (an object on top covers where the lower one would be: enclosing circle, convex hull, or the usual length of a bar whose end is hidden); for pairs pressed together that the outlines leave open, Apertus is asked which lies on top; the hand (and what it wears); distances between centres in mm (scale from the calibration) |
 | Understand | `pipeline/reason.py` | **Apertus** | The instruction becomes JSON (constrained decoding): action verb; per step the target (kind, colour, how many, relation to another object, exceptions) and the destination; what must not move; "that one" without a name; other dangers. 22 worked examples written for this purpose (not from the dev set) |
-| Decide | `pipeline/plan.py` | **Apertus** (lookups) + rules | Resolves the target on the scene graph; refuses unsafe verbs, objects in a hand, absent objects, objects wider than the gripper (unknown objects: by their measured width), things that do not fit (unknown containers: by their size), contradictions; asks when the words fit several objects or nothing is named; otherwise plans, moving whatever lies on the target first. For objects outside the workcell list, Apertus answers yes/no per object: "can 'the tool' mean the wrench?", and, when no name matches, "is the object in this crop a padlock?" |
-| Vote | `run.py` | **Apertus** ×5 | One greedy and four sampled readings; readings that use a relation the sentence never says are discarded; majority vote on the decision |
-| Safety check | `pipeline/reason.py` | **Apertus** | Before a plan goes out, one short separate question: does the sentence ask for something dangerous (throw, drop, push, pull out from under, take from or put on a person, hold two objects at once)? The long reading sometimes keeps only the first verb of "pick up the mug and throw it" |
+| Decide | `pipeline/plan.py` | **Apertus** (lookups) + rules | Resolves the target on the scene graph; refuses unsafe verbs, objects in a hand, absent objects, objects wider than the gripper (unknown objects: by their measured width), things that do not fit (unknown containers: by their size), contradictions; asks when the words fit several objects or nothing is named; otherwise plans, moving whatever lies on the target first. For objects outside the workcell list, Apertus answers yes/no per object: "can 'the tool' mean the wrench?", and, when no name matches, "is the object in this crop a padlock?". With `--reading rules`, keyword rules (R1–R30, S1–S3) also repair the command against the sentence, e.g. "with nothing on it" read as *under*. With `--reading questions` they are off; taking from a hand, holding two at once and an unknown name are yes/no questions to Apertus instead |
+| Vote | `run.py` | **Apertus** ×5 | One greedy and four sampled readings; majority vote on the decision. With `--reading rules`, readings that use a relation the sentence never says are discarded first (V) |
+| Follow-up questions | `run.py` `h3()`, `pipeline/ask.py` | **Apertus** | `--reading questions` only. If the readings disagree, Apertus picks the plain-English paraphrase that says exactly what was asked. If nothing fits, several objects fit or no place is found, it answers one question chosen by that kind of problem: what the words "on the plate" tell the robot, how many are wanted, which object is meant, where it should go, what "closest" is measured from. Each is a one-sentence reason then a letter, asked twice with the options reversed, and counts only if both agree. The answer is applied and the instruction decided again, up to 3 times |
+| Safety check | `pipeline/reason.py`, `run.py` | **Apertus** | Before a plan goes out, one short separate question: does the sentence ask for something dangerous (throw, drop, push, pull out from under, take from or put on a person, hold two objects at once)? The long reading sometimes keeps only the first verb of "pick up the mug and throw it". With `--reading rules` the verdict counts only if the sentence has a word for that danger (S5), and the long reading's "other danger" is overruled only for care phrases such as "without dropping" (S4); with `--reading questions` Apertus confirms both with yes/no questions instead |
 
 The answer's `target_pixel` is the visible pixel deepest inside the first object picked (the
 maximum of the distance transform of its mask): always on the object, and the middle of its top
 surface for the real robot.
 
-## Run it (about 15 minutes, most of it downloads)
+## Run it
 
-Needs an NVIDIA GPU with 16 GB or more (tested on an RTX 3090, 24 GB) and Docker with GPU support.
-
-```
-git clone <this repository> && cd see-it-say-it-pick-it
-echo HF_TOKEN=hf_... > .env              # a Hugging Face token
-docker compose up -d                     # Apertus 1.5 8B FP8 in vLLM on port 8000; first start downloads ~11 GB
-python -m venv .venv && .venv/bin/pip install -r requirements.txt     # Windows: .venv\Scripts\pip
-.venv/bin/python run.py --data dataset --out results.json             # SAM 2.1 (~0.9 GB) downloads on first use
-python starter/evaluate.py results.json --data dataset
-```
-
-On any folder of scenes (one sub-folder per scene with `rgb.png` and `instructions.txt`):
-
-```
-python run.py --data heldout --out results_heldout.json
-```
+Setup, commands and the pitfalls of serving Apertus: [README, Getting started](README.md#getting-started).
+In short: `docker compose up -d`, then `python run.py --data dataset --out results.json` (add
+`--reading questions` for the second reading) and `python starter/evaluate.py results.json --data dataset`.
 
 A first run takes about a minute per scene on the 3090 (SAM, ~60 short Apertus questions about the
 regions, 5 readings per instruction): about 10 minutes for the 10 dev scenes. With the CPU build of torch
 (what `pip install -r requirements.txt` gives on Windows) SAM runs on the CPU and a scene takes
 about 2 minutes, with the same answers; Apertus still needs the GPU. SAM needs about 2 GB of RAM. Everything is cached in `.cache/` (masks, every Apertus reply), so a
-second run takes seconds. `run.py --help` lists the options (`--base-url` for another server,
-`--votes`, `--cache`).
+second run takes seconds. `run.py --help` lists the options (`--reading`, `--base-url` for another
+server, `--model`, `--votes`, `--cache`, `--scenes`). `--reading questions` adds about one Apertus call
+per instruction.
 
 Each run also writes `<out>.details/`: an overlay per scene with every object found and its grasp
 pixel, the scene graph as text, and for every instruction the reading, the votes and how the
 decision was reached. This is what the jury reads to check the vision step.
 
-`docker-compose.yml` uses `--gpu-memory-utilization 0.62` so SAM fits next to Apertus on a 24 GB
-card. The JSON grammar does not mask Apertus's turn-end tokens, so `pipeline/llm.py` biases them
-away; without that, constrained replies stop mid-string (see `docs/report.md`).
-
 ## Files
 
 | Path | |
 |---|---|
-| `run.py` | The one command |
-| `pipeline/` | `llm.py` (client, constrained JSON, cache), `perception.py`, `scene_graph.py`, `reason.py`, `plan.py` |
-| `experiments/` | `apertus_only.py` (the A/B point), `check_perception.py` (perception vs ground truth), `mask_quality.py` (outline IoU vs ground truth), `stress.py` with `stress.jsonl`, `stress2.jsonl`, `stress3.jsonl`, `augment_check.py` |
+| `run.py` | The one command; the vote, the safety check and `h3()` (follow-up questions) |
+| `pipeline/` | `llm.py` (client, constrained JSON, cache), `perception.py`, `scene_graph.py`, `reason.py`, `plan.py` (decisions, safety, the rules of `--reading rules`), `ask.py` (the questions of `--reading questions`) |
+| `experiments/` | `apertus_only.py` (the A/B point), `check_perception.py` (perception vs ground truth), `mask_quality.py` (outline IoU vs ground truth), `stress.py` with `stress.jsonl`, `stress2.jsonl`, `stress3.jsonl`, `augment_check.py`, `safety_regression.jsonl` |
 | `docs/report.md` | Where Apertus had difficulty |
+| `docs/questions-instead-of-rules.md` | The study behind `--reading questions`, with before/after images |
+| `heldout/REPORT.md` | The held-out run |
 | `docker-compose.yml` | Apertus in vLLM |
 
 ## Licences
 
-Our code: Apache 2.0. Apertus 1.5: see its model card (swiss-ai). SAM 2.1: Apache 2.0. Data in
+Pipeline code: Apache 2.0. Apertus 1.5: see its model card (swiss-ai). SAM 2.1: Apache 2.0. Data in
 `dataset/`: CC BY 4.0.

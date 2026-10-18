@@ -8,6 +8,11 @@ The rules come from docs/safety_primer.md and the challenge:
   that forbids a move it needs (or contradicts itself)
 - ask: the object is only pointed at ("that one"), or the words fit several objects equally
 - otherwise plan: one object at a time, whatever lies on an object is moved away first.
+
+Two readings of the instruction (run.py --reading): with "rules", keyword rules repair Apertus's structured
+command against the sentence (each is guarded by RULES); with "questions", those rules are off, three of them
+are replaced by yes/no questions to Apertus (person, two at once, an unknown name), and run.py asks follow-up
+questions where the rules used to decide. The safety limits above apply in both.
 """
 from __future__ import annotations
 
@@ -18,6 +23,18 @@ import numpy as np
 
 from .perception import COLOR_WORDS, NEAR, OTHER
 from .scene_graph import SceneGraph
+
+# Which reading runs (run.py --reading). "rules": the keyword rules below repair Apertus's reading of the
+# instruction. "questions": those rules are off and Apertus is asked short questions instead (run.py h3).
+RULES = True
+QUESTIONS = False
+
+YN_PERSON = ('A person tells a robot arm: "{text}"\nDoes the person ask the robot to take an object out of a person\'s hand '
+             '(an object a person is holding)? Answer yes or no.')
+YN_TWO = ('A person tells a robot arm with a two-finger gripper: "{text}"\nDoes the person ask the robot to hold two or more '
+          'objects in its gripper at the same time? Answer yes or no.')
+YN_NAME = ('A person tells a robot arm: "{text}"\nOn the table there is {a} {name}{desc}. Can "{phrase}" mean the {name}? '
+           'Answer yes or no.')
 
 KIND_CLASSES = {"gear": {"red gear", "yellow gear"}, "cube": {"red cube"}, "mug": {"mug"}, "mandarin": {"mandarin"},
                 "banana": {"banana"}, "fruit": {"mandarin", "banana"}, "plate": {"plate"}, "saucer": {"saucer"},
@@ -118,6 +135,11 @@ def _words(text: str) -> set[str]:
 
 
 def said(rel: str, text: str) -> bool:
+    """With the rules on, a relation counts only if the instruction has a cue word for it; without them, always."""
+    return cue_in(rel, text) if RULES else True  # V
+
+
+def cue_in(rel: str, text: str) -> bool:
     """The instruction contains a cue word for this relation (relations without cues always pass)."""
     words, cues = _words(text), CUES.get(rel)
     return cues is None or any(any(w.startswith(c) for w in words) for c in cues.split())
@@ -130,6 +152,8 @@ def indefinite(text: str) -> bool:
 def consistent(cmd: dict, text: str) -> bool:
     """The reading uses what the sentence says: each relation has a cue word in it, each kind a noun in it, and a
     stacking word in it is used. Only these readings vote, when there are any."""
+    if not RULES:  # V
+        return True
     rels = [st["target"]["relation"] for st in cmd["steps"]]
     if not all(said(r, text) for r in rels):
         return False
@@ -150,6 +174,7 @@ class Decision:
     actions: list = field(default_factory=list)
     target: str | None = None                  # id of the first object picked
     notes: list = field(default_factory=list)  # how the decision was reached, for the report
+    info: dict = field(default_factory=dict)   # where the decision stopped: step, target, candidates (for follow-up questions)
 
 
 def _stem(w: str) -> str:
@@ -228,7 +253,7 @@ def _all(g: SceneGraph, kind: str, color: str, graspable_only: bool = False, phr
         what = " ".join(w for w in _ref_phrase(phrase).split() if w not in ("the", "a", "an")) or noun
         found = [i for i in others if g.looker(i, what)]      # named "USB flash drive", but is it the padlock?
     head = _noun(phrase)
-    if head and head not in GENERIC_NOUNS | ANY_NOUNS and found:
+    if RULES and head and head not in GENERIC_NOUNS | ANY_NOUNS and found:  # R23
         exact = [i for i in found if head in {_stem(w) for w in _words(g.nodes[i].name)}]
         if exact:
             found = exact
@@ -296,10 +321,12 @@ def _between(g: SceneGraph, cands: list[str], a: list[str], b: list[str]) -> lis
 
 def resolve(g: SceneGraph, t: dict, text: str = "") -> list[str]:
     """The object ids an instruction's target description fits."""
+    if t.get("pin"):                    # an object Apertus chose in a follow-up question
+        return [i for i in t["pin"] if i in g.nodes]
     kind, color, rel = t["kind"], t["color"], t["relation"]
     if rel in NEEDS_REF and t.get("ref_kind", "none") == "none":
         side = [SIDES[w] for w in _words(t.get("which_words", "") or t.get("words", "")) if w in SIDES]
-        if rel in ("closest to", "next to", "farthest from") and side:     # "nearest the top of the picture"
+        if RULES and rel in ("closest to", "next to", "farthest from") and side:     # R24: "nearest the top of the picture"
             rel = side[0] if rel != "farthest from" else OPPOSITE[side[0]]
         else:
             rel = {"to the left of": "leftmost", "to the right of": "rightmost", "above": "topmost",
@@ -311,6 +338,8 @@ def resolve(g: SceneGraph, t: dict, text: str = "") -> list[str]:
     refs = [] if rk in ("none", "grey tray", "black tray", "person's hand") else \
         _all(g, rk, rc, phrase=_ref_phrase(t.get("which_words", "")), text=text)     # "next to the tennis ball"
     refs = _qualified(g, refs, rk, t.get("which_words", ""))
+    if t.get("ref_pin"):                # the reference object Apertus chose in a follow-up question
+        refs = [i for i in t["ref_pin"] if i in g.nodes]
     if rk in KIND_CLASSES and rk != "something else" and rel not in ("none", "leftmost", "rightmost", "topmost", "bottommost", "biggest", "smallest",
                                           "with nothing on it", "in the middle") and not rel.startswith("nth"):
         cands = [c for c in cands if c not in refs or len(refs) > 1]      # "the gear lying on the other gear"
@@ -318,7 +347,7 @@ def resolve(g: SceneGraph, t: dict, text: str = "") -> list[str]:
                                                          "to the left of", "to the right of", "above", "below"):
         cands = [c for c in cands if g.nodes[c].tray == rk] or cands     # "the middle object in the black tray"
         rk = "none"
-    tray = _tray_said(t)
+    tray = _tray_said(t) if RULES else ""  # R25
     if tray and rel not in ("in", "not in") and rk not in ("grey tray", "black tray"):
         inside = [c for c in cands if g.nodes[c].tray == tray]
         cands = inside or cands
@@ -390,7 +419,7 @@ def resolve(g: SceneGraph, t: dict, text: str = "") -> list[str]:
                      text=text) \
             if t.get("ref2_kind") in KIND_CLASSES else []
         refs2 = _qualified(g, refs2, t.get("ref2_kind", "none"), t.get("which_words", ""))
-        if not refs2 or t.get("ref2_kind") in (t.get("ref_kind"), "none"):
+        if RULES and (not refs2 or t.get("ref2_kind") in (t.get("ref_kind"), "none")):  # R27
             refs2 = refs                      # "between the two mandarins", "between the other two"
         return _between(g, cands, refs, refs2)
     if rel == "across both trays":
@@ -434,7 +463,7 @@ def _tray_said(t: dict) -> str:
 
 def _qualified(g: SceneGraph, refs: list[str], kind: str, which: str) -> list[str]:
     """'between the top cube and the red gear': a side word just before the reference's noun picks one of them."""
-    if len(refs) < 2 or not which:
+    if len(refs) < 2 or not which or not RULES:  # R26
         return refs
     words = which.lower().replace(",", " ").split()
     nouns = KIND_WORDS.get(kind, "").split()
@@ -481,8 +510,16 @@ def _dest_phrase(where: str) -> str:
 
 
 def decide(g: SceneGraph, cmd: dict, text: str = "") -> Decision:
+    ctx = {}
+    d = _decide(g, cmd, text, ctx)
+    d.info = ctx
+    return d
+
+
+def _decide(g: SceneGraph, cmd: dict, text: str, ctx: dict) -> Decision:
     notes = []
-    if text and _words(text) & {"in", "into", "inside", "on", "onto"} and not _words(text) & NEXT_WORDS \
+    # R30
+    if RULES and text and _words(text) & {"in", "into", "inside", "on", "onto"} and not _words(text) & NEXT_WORDS \
             and any(st["destination"]["place"] == "next to an object" for st in cmd["steps"]):
         # "put the mug inside the small white part" read as "next to": the sentence says in or on, not beside
         cmd = {**cmd, "steps": [{**st, "destination": {**st["destination"], "place": "on or in an object"}}
@@ -491,12 +528,14 @@ def decide(g: SceneGraph, cmd: dict, text: str = "") -> Decision:
     steps = cmd["steps"]
     words = steps[0]["target"]["words"] or "the object"
     # 1. unsafe actions: refused whatever the scene
-    if cmd["action"] == "take from the person" and text and not PERSON_WORDS & _words(text):
+    if cmd["action"] == "take from the person" and text and (not g.yesno(YN_PERSON.format(text=text)) if QUESTIONS
+                                                          else RULES and not PERSON_WORDS & _words(text)):  # S1
         cmd = {**cmd, "action": "put or move"}            # "take the mandarin off the saucer"
         notes.append("no person in the instruction: an ordinary pick")
     if cmd["action"] in UNSAFE:
         return Decision("refuse", UNSAFE[cmd["action"]].format(it=words), notes=[f"action: {cmd['action']}"])
-    if cmd.get("holds_two_at_once") and (not text or TWO_AT_ONCE.search(text.lower())):
+    if cmd.get("holds_two_at_once") and (g.yesno(YN_TWO.format(text=text)) if QUESTIONS and text else
+                                         (not RULES or not text or TWO_AT_ONCE.search(text.lower()))):  # S2
         return Decision("refuse", "The gripper holds one object at a time, so it cannot carry these together. I can move "
                         "them one after the other.", notes=["two at once"])
     if any(st["destination"]["place"] == "onto or next to the person's hand or body" for st in steps):
@@ -505,29 +544,30 @@ def decide(g: SceneGraph, cmd: dict, text: str = "") -> Decision:
     if cmd["other_danger"]:
         return Decision("refuse", f"This could hurt someone or make an object fall: {cmd['meaning']}", notes=["other danger"])
     # 2. an object only pointed at
-    if all(_words(st["target"]["words"]) <= PRONOUNS for st in steps) and not cmd["vague_reference"]:
+    if RULES and all(_words(st["target"]["words"]) <= PRONOUNS for st in steps) and not cmd["vague_reference"]:  # R1
         cmd = {**cmd, "vague_reference": True}         # "put it in the other tray": "it" names nothing
     named = any(st["target"]["relation"] != "none" and said(st["target"]["relation"], text) for st in steps)
     # "take it off the gear": nothing but "it" names the object, whatever else the sentence says about it
-    bare = all(_words(st["target"]["words"]) and _words(st["target"]["words"]) <= BARE_PRONOUNS for st in steps)
-    if cmd["vague_reference"] and (not named or bare):      # "the object in my hand" is pointed at, but also described
+    bare = RULES and all(_words(st["target"]["words"]) and _words(st["target"]["words"]) <= BARE_PRONOUNS for st in steps)  # R29
+    if cmd["vague_reference"] and (not (named and RULES) or bare):      # R28: "the object in my hand" is pointed at, but also described
         return Decision("ask_user", "Which object do you mean? I cannot see where you are pointing. I can see: "
                         + ", ".join(sorted({g.nodes[i].name for i in g.ids()})) + ".", notes=["vague reference"])
     keep = {i for k in cmd.get("keep_still", []) for i in _all(g, k["kind"], k["color"])}
-    if keep and text and CARE_PHRASE.search(text.lower()) and not KEEP_PHRASE.search(text.lower()):
+    if RULES and keep and text and CARE_PHRASE.search(text.lower()) and not KEEP_PHRASE.search(text.lower()):  # S3
         notes.append("nothing in the instruction says an object must stay: 'keep still' dropped")
         keep = set()
     plan, moved = [], []
     for st in steps:
+        ctx["step"] = ctx.get("step", -1) + 1
         t, d = st["target"], st["destination"]
         neg = NOT_COLOUR.search(t["words"].lower() + " " + (text.lower() if t["color"] != "any" else ""))
-        if neg and neg.group(2) in COLOR_WORDS and t["color"] in (neg.group(2), "any", "other"):
+        if RULES and neg and neg.group(2) in COLOR_WORDS and t["color"] in (neg.group(2), "any", "other"):  # R2
             t = {**t, "color": "any", "except": t.get("except", []) + [{"kind": t["kind"], "color": neg.group(2)}]}
             notes.append(f"'not {neg.group(2)}': every colour but {neg.group(2)}")
         noun = _noun(t["words"])
-        if t["kind"] == "something else" and noun in ANY_NOUNS:
+        if RULES and t["kind"] == "something else" and noun in ANY_NOUNS:  # R3
             t = {**t, "kind": "object"}                 # "the yellow object", "the red one"
-        elif t["kind"] == "object" and noun and noun not in ANY_NOUNS | set(HEAD_KIND) | set(COLOR_WORDS):
+        elif RULES and t["kind"] == "object" and noun and noun not in ANY_NOUNS | set(HEAD_KIND) | set(COLOR_WORDS):  # R3
             t = {**t, "kind": "something else"}         # "the tool", "the book": a name to look for
         for rk_key in ("ref_kind", "ref2_kind"):        # "closest to the screwdriver" read with ref_kind "saucer"
             rk = t.get(rk_key, "none")
@@ -535,39 +575,40 @@ def decide(g: SceneGraph, cmd: dict, text: str = "") -> Decision:
             where = t.get("which_words", "")
             if _head(_ref_phrase(where)) in {"two", "three", "other", "others", "one", "ones", "them", "both", ""}:
                 where = text                  # "between the other two": the noun is elsewhere in the sentence
-            if cues and not any(w.startswith(c) for c in cues for w in _words(where or text)):
+            if RULES and cues and not any(w.startswith(c) for c in cues for w in _words(where or text)):  # R4
                 t = {**t, rk_key: "something else"}
                 notes.append(f"'{rk}' is not in '{t.get('which_words', '')}': an object named there")
         ref_noun = _head(t.get("which_words", ""))
-        if t["relation"] in NEEDS_REF - {"in"} and t.get("ref_kind", "none") == "none" and ref_noun \
+        # R5
+        if RULES and t["relation"] in NEEDS_REF - {"in"} and t.get("ref_kind", "none") == "none" and ref_noun \
                 and ref_noun not in SIDES and ref_noun not in {"photo", "picture", "image", "tray", "table", "it", "them"}:
             t = {**t, "ref_kind": "something else"}     # "closest to the computer mouse" with no kind filled in
             notes.append(f"the reference '{t['which_words']}' is named there")
-        if t["kind"] == "object" and HEAD_KIND.get(_noun(t["words"])):
+        if RULES and t["kind"] == "object" and HEAD_KIND.get(_noun(t["words"])):  # R6
             t = {**t, "kind": HEAD_KIND[_noun(t["words"])]}
             notes.append(f"'{_phrase(t)}': kind {t['kind']} from its noun")
-        if t["how_many"] == "one" and t["words"].lower().split()[:1] in (["a"], ["an"], ["any"]):
+        if RULES and t["how_many"] == "one" and t["words"].lower().split()[:1] in (["a"], ["an"], ["any"]):  # R7
             t = {**t, "how_many": "any one"}           # "put a red gear on the plate": any of them
         which = t.get("which_words", "").strip().lower()
-        if t["relation"] in ("lying on", "in", "above") and (
+        if RULES and (t["relation"] in ("lying on", "in", "above") and (  # R8
                 (d["place"] == "on or in an object" and t["ref_kind"] == d["kind"])
                 or (d["place"] in ("grey tray", "black tray") and t["ref_kind"] == d["place"])) \
-                or (len(which.split()) > 1 and which in cmd.get("move_where", "").lower()):
+                or (len(which.split()) > 1 and which in cmd.get("move_where", "").lower())):
             t = {**t, "relation": "none", "ref_kind": "none"}   # "the mandarin" read as "the mandarin on the plate"
             notes.append("the description named the destination: dropped")
-        if t["relation"].startswith("nth") and not ORDINALS & _words(text) and not any(w[:1].isdigit() for w in _words(text)):
+        if RULES and t["relation"].startswith("nth") and not ORDINALS & _words(text) and not any(w[:1].isdigit() for w in _words(text)):  # R9
             t = {**t, "relation": {"left": "leftmost", "right": "rightmost", "top": "topmost",
                                    "bottom": "bottommost"}[t["relation"].split()[-1]]}   # "the right one of the two"
             notes.append(f"no ordinal word: read as {t['relation']}")
-        if t["relation"] == "none" and {"uncovered", "free", "alone", "own", "unstacked", "bare"} & _words(t["words"] + " " + text):
+        if RULES and t["relation"] == "none" and {"uncovered", "free", "alone", "own", "unstacked", "bare"} & _words(t["words"] + " " + text):  # R10
             t = {**t, "relation": "with nothing on it"}    # "the uncovered red gear", "lying on its own"
             notes.append("'uncovered/free/on its own': with nothing on it")
-        if t["relation"] == "none":                     # "the biggest object" with the relation left empty
+        if RULES and t["relation"] == "none":                     # R11: "the biggest object" with the relation left empty
             sup = [r for w, r in SUPERLATIVES.items() if w in t["words"].lower().split()]
             if sup:
                 t = {**t, "relation": sup[0]}
                 notes.append(f"'{t['words']}': relation {sup[0]} from the words")
-        if t["relation"] == "under" and t["ref_kind"] == "none" and said("with nothing on it", text):
+        if RULES and t["relation"] == "under" and t["ref_kind"] == "none" and said("with nothing on it", text):  # R12
             t = {**t, "relation": "with nothing on it"}   # "the red gear with nothing on it", read as "under"
         if text and not said(t["relation"], text) and t["relation"] in ("under", "lying on") \
                 and said({"under": "below", "lying on": "above"}[t["relation"]], text):
@@ -577,10 +618,11 @@ def decide(g: SceneGraph, cmd: dict, text: str = "") -> Decision:
             notes.append(f"relation '{t['relation']}' is not in the instruction: dropped")
             t = {**t, "relation": "none", "ref_kind": "none"}
         ids = resolve(g, t, text)
-        if not ids and t["relation"] == "under" and said("below", text) and not STACK_WORDS & _words(text):
+        if RULES and not ids and t["relation"] == "under" and said("below", text) and not STACK_WORDS & _words(text):  # V
             t = {**t, "relation": "below"}            # "below the red gears": lower in the photo, not stacked
             ids = resolve(g, t, text)
-        if not ids and t["relation"] == "in" and t["ref_kind"] in ("grey tray", "black tray") \
+        # R13
+        if RULES and not ids and t["relation"] == "in" and t["ref_kind"] in ("grey tray", "black tray") \
                 and d["place"] in ("nowhere, just pick up", "to the person") \
                 and (cmd["action"] != "pick up" or {"need", "needs", "want", "wants", "should", "must"} & _words(text)):
             d = {**d, "place": t["ref_kind"]}         # "I need the red gear in the black tray": where it should go
@@ -588,45 +630,60 @@ def decide(g: SceneGraph, cmd: dict, text: str = "") -> Decision:
             ids = resolve(g, t, text)
             notes.append(f"nothing is in the {d['place']}: read as where it goes")
         sup = [r for w, r in SUPERLATIVES.items() if w in _words(t["words"])]
-        if len(ids) > 1 and sup and t["relation"] != sup[0]:   # "the smallest object in the grey tray": both
+        if RULES and len(ids) > 1 and sup and t["relation"] != sup[0]:   # R14: "the smallest object in the grey tray": both
             ids = _extreme(g, ids, sup[0]) if sup[0] in ("biggest", "smallest") else _outermost(g, ids, sup[0])
             notes.append(f"'{sup[0]}' applied after '{t['relation']}'")
         notes.append(f"'{t['words']}' -> {ids}")
+        ctx.update(t=t, d=d, ids=list(ids))
+        if not ids and QUESTIONS and text and not _all(g, t["kind"], t["color"], phrase=_phrase(t), text=text):
+            from .perception import CLASS_DESC                    # "the grey workpiece": a name Apertus may know
+            phrase = _phrase(t) or t["words"]
+            names = sorted({g.nodes[i].name for i in g.ids(True)})
+            yes = [n for n in names if g.yesno(YN_NAME.format(text=text, phrase=phrase, name=n, a="an" if n[:1] in "aeiou" else "a",
+                                                             desc=f" ({CLASS_DESC[n]})" if n in CLASS_DESC else ""))]
+            if yes:
+                t = {**t, "kind": "object"}
+                ids = [i for i in resolve(g, t, text) if g.nodes[i].name in yes]
+                notes.append(f"Apertus: '{phrase}' can mean {yes} -> {ids}")
         if not ids:
             same_kind = _all(g, t["kind"], "any", phrase=_phrase(t), text=text)
             if not _all(g, t["kind"], t["color"], phrase=_phrase(t), text=text):
                 return Decision("refuse", f"There is no {t['words'].removeprefix('the ')} in the workcell.", notes=notes)
             return Decision("refuse", f"I cannot find {t['words']}: none of the {len(same_kind)} matching objects fits that "
                             "description.", notes=notes)
-        if t["how_many"] != "all" and {"both", "all", "every", "each", "everything"} & _words(t["words"]):
+        if RULES and t["how_many"] != "all" and {"both", "all", "every", "each", "everything"} & _words(t["words"]):  # R15
             t = {**t, "how_many": "all"}               # "both grey parts", read as one
             notes.append("'both/all/every' in the words: all of them")
-        if t["how_many"] == "any one" and text and not indefinite(text):
+        if RULES and t["how_many"] == "any one" and text and not indefinite(text):  # R16
             t = {**t, "how_many": "one"}               # "the fruit" is one particular fruit, whatever Apertus said
             notes.append("'any one' without a, an, any or some: one particular object")
         plural = _noun(t["words"]) + "s"
-        if t["how_many"] == "one" and len(ids) > 1 and {"both", "all", "every", "each"} & _words(text) \
+        # R17
+        if RULES and t["how_many"] == "one" and len(ids) > 1 and {"both", "all", "every", "each"} & _words(text) \
                 and any(w.startswith(plural) for w in _words(text)) and len(steps) <= 2:
             t = {**t, "how_many": "all"}                 # "both mandarins"
             notes.append(f"'{plural}' in the instruction: all of them")
-        if "both" in _words(text) and any(w.startswith(_noun(t["words"]) + "s") for w in _words(text)) \
+        # R18
+        if RULES and "both" in _words(text) and any(w.startswith(_noun(t["words"]) + "s") for w in _words(text)) \
                 and len(_all(g, t["kind"], t["color"], phrase=_phrase(t), text=text)) > 2 and t["relation"] == "none":
             return Decision("ask_user", f"You said both, but I see {len(_all(g, t['kind'], t['color'], phrase=_phrase(t), text=text))} "
                             f"{_noun(t['words'])}s. Which two do you mean?", notes=notes)
-        if t["how_many"] == "one" and len(ids) > 1 and {"both", "all", "every", "each", "two", "three"} & _words(text) \
+        # R19
+        if RULES and t["how_many"] == "one" and len(ids) > 1 and {"both", "all", "every", "each", "two", "three"} & _words(text) \
                 and {"first", "second", "third", "other", "another"} & _words(t["words"]) \
                 and not {"left", "right", "top", "bottom", "upper", "lower"} & _words(t["words"]):
             t = {**t, "how_many": "any one"}
             notes.append(f"'{t['words']}' is one of a group the instruction names: any not yet moved")
-        if len(ids) > 1 and {"other", "remaining", "rest", "another"} & _words(t["words"]):
+        if RULES and len(ids) > 1 and {"other", "remaining", "rest", "another"} & _words(t["words"]):  # R20
             rest = [i for i in ids if i not in moved and i not in keep]
             if rest:
                 ids = rest
                 notes.append(f"'other/remaining': not the ones kept or moved -> {ids}")
+        ctx.update(t=t, cands=list(ids))
         if t["how_many"] == "any one" and len(ids) > 1:
             ids = [i for i in ids if i not in moved] or ids
         if t["how_many"] == "any one" and len(ids) > 1:     # "a red gear": any will do; take one with nothing on it
-            first = next((k for rx, k in ORDER_WORDS if rx.search(text.lower())), None)
+            first = next((k for rx, k in ORDER_WORDS if rx.search(text.lower())), None) if RULES else None  # R21
             ids = sorted(ids, key=lambda i: (len(g.above(i)), first(g.centre(i), g.nodes[i].obj.area) if first
                                              else g.centre(i)[0]))[:1]
             notes.append(f"any one of them: {ids[0]}")
@@ -661,17 +718,20 @@ def decide(g: SceneGraph, cmd: dict, text: str = "") -> Decision:
         elif d["place"] == "on or in an object":
             dphrase = _dest_phrase(cmd.get("move_where", ""))
             dkind = d["kind"]
-            if KIND_SYNONYMS.get(dkind) and not any(w.startswith(c) for c in KIND_SYNONYMS[dkind].split()
+            if RULES and KIND_SYNONYMS.get(dkind) and not any(w.startswith(c) for c in KIND_SYNONYMS[dkind].split()  # R22
                                                     for w in _words(text or dphrase)):
                 dkind = "something else"            # "on the sponge" read as "saucer"
-            if dkind == "object" and _noun(dphrase) and _noun(dphrase) not in ANY_NOUNS | set(COLOR_WORDS):
+            if RULES and dkind == "object" and _noun(dphrase) and _noun(dphrase) not in ANY_NOUNS | set(COLOR_WORDS):  # R22
                 dkind = HEAD_KIND.get(_noun(dphrase), "something else")      # "on the book"
             d = {**d, "kind": dkind}
             # move_where is one phrase for the whole command ("next to the mandarin on the plate"): only a place
             # outside the workcell's kinds is looked up by it
             dids = [i for i in _all(g, dkind, d["color"], phrase=dphrase if dkind in ("something else", "object") else "",
                                     text=text) if i not in ids]
+            if d.get("pin"):                # a place Apertus chose in a follow-up question
+                dids = [i for i in d["pin"] if i in g.nodes and i not in ids]
             notes.append(f"destination '{d['kind']}' -> {dids}")
+            ctx.update(d=d, dids=list(dids))
             if not dids:
                 what = dphrase.removeprefix("the ") if d["kind"] == "something else" else d["kind"]
                 return Decision("refuse", f"There is no {d['color'] + ' ' if d['color'] not in ('any', 'other') else ''}"
@@ -715,7 +775,7 @@ def decide(g: SceneGraph, cmd: dict, text: str = "") -> Decision:
                 notes.append(f"already in the {dest.replace('_', ' ')}: {[i for i in ids if i not in away]}")
                 ids = away
         # what has to move first, and the order
-        key = next((k for rx, k in ORDER_WORDS if rx.search(text.lower())), None) if len(ids) > 1 else None
+        key = next((k for rx, k in ORDER_WORDS if rx.search(text.lower())), None) if len(ids) > 1 and RULES else None  # R21
         if key:
             ids = sorted(ids, key=lambda i: key(g.centre(i), g.nodes[i].obj.area))
             notes.append(f"order from the sentence: {ids}")

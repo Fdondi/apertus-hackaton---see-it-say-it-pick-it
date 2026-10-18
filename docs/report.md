@@ -41,6 +41,12 @@ config lists both as end-of-sequence. The JSON grammar in vLLM does not mask the
 a constrained reply could stop inside a string: `{"first_object": "[143, 398)]`. Biasing both
 tokens away (`logit_bias` −100) made every constrained reply complete.
 
+Two more traps showed up in the question experiments of section 7 (the tree of small questions, not in this
+repository): without an example of the reply's shape, a constrained reply could fill its whole token budget with
+blank lines; with an example that shows a real value, Apertus copied that value. A one-line template with
+placeholders fixed both. The questions in `pipeline/ask.py` are small enough not to need one: a letter, or a reason
+of at most 400 characters and a letter.
+
 ## 4. Understanding the instruction
 
 Apertus turns each instruction into a structured command (`pipeline/reason.py`). Most sentences
@@ -55,12 +61,14 @@ come out right on the first try. Where it went wrong:
   nobody said: "pick up the red cube" became "the red cube in the person's hand", "put the banana on
   the plate" became "the banana in the black tray". With only the stacking facts, "the red gear with
   nothing on it" became "the red gear under (something)". We now give the facts only for sentences
-  that contain "under", and code drops any relation the sentence has no word for.
+  that contain "under" (in both readings), and with `--reading rules` code drops any relation the sentence
+  has no word for.
 - **Picking the wrong label from a list.** "To the left of the mug" came out as *topmost*; "with
   nothing on it" as *under*; "the yellow fruit" as "a yellow mandarin" in 4 of 5 readings; "the
   fruit" as "any one fruit". Renaming the options to plain words ("to the left of"), adding worked
   examples, and voting over 5 readings, keeping only those whose relations and nouns are actually in
-  the sentence, fixed these.
+  the sentence, fixed these. That last filter and the keyword rules behind it are `--reading rules`;
+  section 7 is what replaced them in `--reading questions`.
 
 - **Several verbs.** "Pick up the mug by the handle and throw it" came out as *pick up*: the long
   reading keeps the first verb, and an unsafe request got a plan. A separate short question ("does
@@ -126,9 +134,36 @@ problems and a half scored once. The scores are in `SOLUTION.md`; what we learne
   single grasp", "stack it as high as you can" slipped through. In the scorer a missed refusal costs
   about 3 points and a needless one about 1.6, so the flags now stand unless the sentence only asks for
   care ("without dropping", "careful"), and a negated danger word ("without dropping it") does not count.
+  These are keyword rules (S1–S5) of `--reading rules`. In `--reading questions` short yes/no questions decide
+  instead ("could an object fall, tip over, break or be thrown?"); on the same 27 + 7 sentences they refuse
+  26 and plan 6 of the 7 look-alikes (rules: 25 and 6).
 - **Some things it cannot see.** A generated carrot was a "surgical instrument" at every crop size; a
   red apple passed both checks as a mandarin; Apertus said a cube lying on the end of a bar and the bar
   were "side by side" (the bar's usual length shows it, see `scene_graph.amodal`).
+
+## 7. Asking instead of rules
+
+After building the pipeline I turned the 36 keyword rules off and tried four ways of asking Apertus what they used to
+decide (full study with before/after images: [questions-instead-of-rules.md](questions-instead-of-rules.md)). The
+best, one question chosen by the kind of problem left after reading, is `run.py --reading questions`. What it
+showed about Apertus:
+
+- **Ask about the sentence, not the outcome.** "Which of these says exactly what the person asks for?" with the
+  readings as plain-English paraphrases worked; "which of these outcomes is right?" with the scene table was mixed.
+- **Without a reason, the answer follows the option order.** A one-sentence reason before the letter, asked twice
+  with the options reversed, counted only when both agree, made the answers stable.
+- **It believes what the question states.** "4 objects fit 'the gear that is not red'. How many does the person
+  want?" got "all of them", because the code's count was wrong. Show the candidates, not the code's conclusion.
+- **It needs a way out.** "The words fit several equally" saved cases; missing exits ("none of these readings",
+  "that place is not on this table") cost them.
+- **Free-text meta-questions drift.** "What does the robot not know?" got gripper sizes and coordinates; a menu of
+  unknowns worked, but the code's own diagnosis was better.
+- **Many small questions compound errors.** A tree of 8 to 15 small questions in place of the one reading lost
+  badly (dev 52.7): each is wrong a few percent of the time. Notes added before the reading moved it unpredictably.
+
+Zero rules cost 0.8 points over 14 validation sets (50.2 against 51.0) and won on the freshest ones (round 4 51.6
+against 46.5, 25 code-blind rewordings 51.8 against 18.2), but changed three held-out answers, all for the worse
+([heldout/REPORT.md](../heldout/REPORT.md)). That is why `rules` stays the default.
 
 ## Perception on altered photos
 
